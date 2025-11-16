@@ -63,4 +63,70 @@ dist/main
 3️⃣ Test the new executable
 ./dist/main
 
+## Examples
+```json
+{
+  "action": "INSERT",
+  "table": "bundle",
+  "values": {
+    "group_name": "Test Group",
+    "group_address": "123 Test St",
+    "active": true,
+    "created": "2025-01-01",
+    "deactivated": null
+  }
+}
+
+{
+  "action": "UPDATE",
+  "table": "bundle",
+  "filters": {
+    "group_name": "Test Group"
+  },
+  "values": {
+    "active": false,
+    "deactivated": "2025-02-01"
+  }
+}
+
+{
+  "action": "DELETE",
+  "table": "bundle",
+  "filters": {
+    "group_name": "Test Group"
+  }
+}
+
+{
+  "action": "SELECT",
+  "table": "bundle",
+  "filters": {
+    "active": true
+  }
+}
+
+{
+  "action": "SELECT",
+  "table": "book"
+}
+
+ {
+  "action": "LOOKUP",
+  "table": "bundle",
+  "term": "test"
+}
+```
+LOOKUP (explicit column)
+```json
+{
+  "action": "LOOKUP",
+  "table": "book",
+  "term": "daily"
+}
+```
+
+
+
+
+
 
