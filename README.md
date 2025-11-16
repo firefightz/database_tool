@@ -78,51 +78,48 @@ dist/main
 }
 
 {
-  "action": "UPDATE",
-  "table": "bundle",
-  "filters": {
-    "group_name": "Test Group"
-  },
-  "values": {
-    "active": false,
-    "deactivated": "2025-02-01"
-  }
+    "action": "UPDATE",
+    "table": "bundle",
+    "filters": {"group_name": "My Group"},
+    "values": {"active": false}
 }
 
-{
-  "action": "DELETE",
-  "table": "bundle",
-  "filters": {
-    "group_name": "Test Group"
-  }
-}
 
 {
-  "action": "SELECT",
-  "table": "bundle",
-  "filters": {
-    "active": true
-  }
+    "action": "DELETE",
+    "table": "bundle",
+    "filters": {"group_name": "My Group"}
 }
+
+
+{
+    "action": "SELECT",
+    "table": "bundle",
+    "filters": {"active": true}
+}
+
 
 {
   "action": "SELECT",
   "table": "book"
 }
 
- {
-  "action": "LOOKUP",
-  "table": "bundle",
-  "term": "test"
+{
+    "action": "LOOKUP",
+    "table": "bundle",
+    "term": "Group",
+    "column": "group_name"
 }
+
 ```
-LOOKUP (explicit column)
+LOOKUP (defaults to first column)
 ```json
 {
-  "action": "LOOKUP",
-  "table": "book",
-  "term": "daily"
+    "action": "LOOKUP",
+    "table": "bundle",
+    "term": "123"
 }
+
 ```
 
 

@@ -65,7 +65,9 @@ def build_select_query(table, filters):
     return query, values
 
 def build_lookup_query(table, term, column=None):
-    # Default column is the first column in the whitelist for the table
+    # Allow user to provide column; default to first column if not provided
+    if column and column not in TABLES[table]:
+        raise ValueError(f"Column {column} not allowed in table {table}.")
     if not column:
         column = TABLES[table][0]
     query = sql.SQL("SELECT * FROM {} WHERE {} ILIKE %s").format(
@@ -83,7 +85,8 @@ def lambda_handler(event, context):
         "table": "bundle"|"book",
         "filters": {...},   # for SELECT, UPDATE, DELETE
         "values": {...},    # for INSERT, UPDATE
-        "term": "search_term" # for LOOKUP
+        "term": "search_term", # for LOOKUP
+        "column": "column_name" # optional, for LOOKUP
     }
     """
     action = event.get("action", "").upper()
@@ -96,11 +99,13 @@ def lambda_handler(event, context):
     filters = event.get("filters", {})
     values = event.get("values", {})
     term = event.get("term", "")
+    column = event.get("column")  # optional column for LOOKUP
 
-    # validate columns
-    for col in list(filters.keys()) + list(values.keys()):
-        if col not in TABLES[table]:
-            return {"statusCode": 400, "body": json.dumps(f"Column {col} not allowed in table {table}.")}
+    # validate columns for INSERT/UPDATE/DELETE/SELECT
+    if action in ["INSERT", "UPDATE", "DELETE", "SELECT"]:
+        for col in list(filters.keys()) + list(values.keys()):
+            if col not in TABLES[table]:
+                return {"statusCode": 400, "body": json.dumps(f"Column {col} not allowed in table {table}.")}
 
     try:
         # build query
@@ -113,7 +118,7 @@ def lambda_handler(event, context):
         elif action == "SELECT":
             query, params = build_select_query(table, filters)
         elif action == "LOOKUP":
-            query, params = build_lookup_query(table, term)
+            query, params = build_lookup_query(table, term, column)
         else:
             return {"statusCode": 400, "body": json.dumps("Invalid action.")}
 
