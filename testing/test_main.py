@@ -1,183 +1,118 @@
-import pytest
-from unittest.mock import MagicMock, patch
-from datetime import datetime
+import unittest
+from unittest.mock import patch, MagicMock
+import json
+import os
 
-import cli_crud_app_rich_full_bundle as app
+# Patch environment variables before importing main
+env_vars = {
+    "DB_HOST": "localhost",
+    "DB_PORT": "5432",
+    "DB_NAME": "testdb",
+    "DB_USER": "testuser",
+    "DB_PASS": "testpass"
+}
 
+with patch.dict(os.environ, env_vars):
+    import main  # Now main.py sees the env vars
 
-# ---------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------
+class TestCrudLambda(unittest.TestCase):
+ 
 
-@pytest.fixture
-def mock_cursor():
-    cur = MagicMock()
-    cur.description = [
-        ("bundle_name",),
-        ("type",),
-        ("created",),
-        ("active",),
-        ("deactivated",)
-    ]
-    return cur
+    def setUp(self):
+        # Example payloads
+        self.select_payload = {"action": "SELECT", "table": "bundle"}
+        self.insert_payload = {
+            "action": "INSERT",
+            "table": "bundle",
+            "values": {"group_name": "Test", "group_address": "123 St", "active": True}
+        }
+        self.update_payload = {
+            "action": "UPDATE",
+            "table": "bundle",
+            "values": {"active": False},
+            "filters": {"group_name": "Test"}
+        }
+        self.delete_payload = {
+            "action": "DELETE",
+            "table": "bundle",
+            "filters": {"group_name": "Test"}
+        }
+        self.lookup_payload = {
+            "action": "LOOKUP",
+            "table": "bundle",
+            "term": "Ted"
+        }
 
+    @patch("main.psycopg2.connect")
+    def test_select(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
 
-# ---------------------------------------------------------
-# select_row_by_key
-# ---------------------------------------------------------
+        mock_cursor.description = [("group_name",), ("active",)]
+        mock_cursor.fetchall.return_value = [("Test Group", True)]
 
-def test_select_row_by_key_single_result(mock_cursor, mocker):
-    mock_cursor.fetchall.return_value = [
-        ("alpha", "type1", datetime(2024, 1, 1), True, None)
-    ]
+        response = main.lambda_handler(self.select_payload, None)
+        body = json.loads(response["body"])
 
-    mocker.patch("cli_crud_app_rich_full_bundle.Prompt.ask", return_value="1")
-    mocker.patch("cli_crud_app_rich_full_bundle.console.print")
-    mocker.patch("cli_crud_app_rich_full_bundle.display_row")
+        self.assertEqual(body["action"], "SELECT")
+        self.assertEqual(body["result"], [{"group_name": "Test Group", "active": True}])
 
-    result = app.select_row_by_key(mock_cursor, "bundle", "bundle_name", "alpha")
+    @patch("main.psycopg2.connect")
+    def test_insert(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.rowcount = 1
 
-    assert result[0] == "alpha"
-    mock_cursor.execute.assert_called_once()
-    mock_cursor.fetchall.assert_called_once()
+        response = main.lambda_handler(self.insert_payload, None)
+        body = json.loads(response["body"])
+        self.assertEqual(body["action"], "INSERT")
+        self.assertEqual(body["result"]["rowcount"], 1)
 
+    @patch("main.psycopg2.connect")
+    def test_update(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.rowcount = 1
 
-def test_select_row_by_key_no_results(mock_cursor, mocker):
-    mock_cursor.fetchall.return_value = []
+        response = main.lambda_handler(self.update_payload, None)
+        body = json.loads(response["body"])
+        self.assertEqual(body["action"], "UPDATE")
+        self.assertEqual(body["result"]["rowcount"], 1)
 
-    mocker.patch("cli_crud_app_rich_full_bundle.console.print")
+    @patch("main.psycopg2.connect")
+    def test_delete(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.rowcount = 1
 
-    result = app.select_row_by_key(mock_cursor, "bundle", "bundle_name", "none")
-    assert result is None
+        response = main.lambda_handler(self.delete_payload, None)
+        body = json.loads(response["body"])
+        self.assertEqual(body["action"], "DELETE")
+        self.assertEqual(body["result"]["rowcount"], 1)
 
+    @patch("main.psycopg2.connect")
+    def test_lookup(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
 
-# ---------------------------------------------------------
-# add_bundle
-# ---------------------------------------------------------
+        mock_cursor.description = [("group_name",), ("active",)]
+        mock_cursor.fetchall.return_value = [("Teddy", True)]
 
-def test_add_bundle(mock_cursor, mocker):
-    mocker.patch("cli_crud_app_rich_full_bundle.Prompt.ask", side_effect=["BundleX", "type1"])
-    mock_cursor.fetchone.return_value = ("BundleX", "type1", datetime.now(), True)
-
-    mocker.patch("cli_crud_app_rich_full_bundle.display_row")
-    mocker.patch("cli_crud_app_rich_full_bundle.console.print")
-
-    app.add_bundle(mock_cursor)
-
-    assert mock_cursor.execute.call_count == 1
-    assert mock_cursor.fetchone.call_count == 1
-
-
-# ---------------------------------------------------------
-# add_thing
-# ---------------------------------------------------------
-
-def test_add_thing(mock_cursor, mocker):
-    mocker.patch("cli_crud_app_rich_full_bundle.Prompt.ask", return_value="http://x.com")
-    mock_cursor.fetchone.return_value = ("http://x.com", datetime.now())
-
-    mocker.patch("cli_crud_app_rich_full_bundle.display_row")
-    mocker.patch("cli_crud_app_rich_full_bundle.console.print")
-
-    app.add_thing(mock_cursor)
-
-    assert mock_cursor.execute.call_count == 1
-    assert mock_cursor.fetchone.call_count == 1
-
-
-# ---------------------------------------------------------
-# update_bundle
-# ---------------------------------------------------------
-
-def test_update_bundle_with_changes(mock_cursor, mocker):
-    # Mock search result
-    result_row = ("alpha", "type1", datetime.now(), True, None)
-    mock_cursor.description = [(c,) for c in ["bundle_name", "type", "created", "active", "deactivated"]]
-    mocker.patch("cli_crud_app_rich_full_bundle.select_row_by_key", return_value=result_row)
-
-    # User chooses to update active + remove deactivated
-    mocker.patch("cli_crud_app_rich_full_bundle.Confirm.ask", side_effect=[True, True, True])
-    mocker.patch("cli_crud_app_rich_full_bundle.Prompt.ask", return_value="alpha")
-
-    mock_cursor.fetchone.return_value = result_row
-
-    mocker.patch("cli_crud_app_rich_full_bundle.display_row")
-    mocker.patch("cli_crud_app_rich_full_bundle.console.print")
-
-    app.update_bundle(mock_cursor)
-
-    # Should run UPDATE
-    assert mock_cursor.execute.call_count == 1
-
-
-def test_update_bundle_no_match(mock_cursor, mocker):
-    mocker.patch("cli_crud_app_rich_full_bundle.select_row_by_key", return_value=None)
-    mocker.patch("cli_crud_app_rich_full_bundle.Prompt.ask", return_value="x")
-
-    app.update_bundle(mock_cursor)
-
-    mock_cursor.execute.assert_not_called()
+        response = main.lambda_handler(self.lookup_payload, None)
+        body = json.loads(response["body"])
+        self.assertEqual(body["action"], "LOOKUP")
+        self.assertEqual(body["result"], [{"group_name": "Teddy", "active": True}])
 
 
-# ---------------------------------------------------------
-# update_thing
-# ---------------------------------------------------------
-
-def test_update_thing(mock_cursor, mocker):
-    row = ("http://old.com", datetime.now())
-    mock_cursor.description = [(c,) for c in ["thing_url", "update_time"]]
-    mocker.patch("cli_crud_app_rich_full_bundle.select_row_by_key", return_value=row)
-
-    mocker.patch("cli_crud_app_rich_full_bundle.Confirm.ask", return_value=True)
-    mocker.patch("cli_crud_app_rich_full_bundle.Prompt.ask", side_effect=["old", "http://new.com"])
-
-    mock_cursor.fetchone.return_value = row
-
-    mocker.patch("cli_crud_app_rich_full_bundle.display_row")
-    mocker.patch("cli_crud_app_rich_full_bundle.console.print")
-
-    app.update_thing(mock_cursor)
-
-    assert mock_cursor.execute.call_count == 1
-
-
-# ---------------------------------------------------------
-# delete_bundle
-# ---------------------------------------------------------
-
-def test_delete_bundle(mock_cursor, mocker):
-    row = ("alpha", "t", datetime.now(), True, None)
-    mock_cursor.description = [(c,) for c in ["bundle_name", "type", "created", "active", "deactivated"]]
-
-    mocker.patch("cli_crud_app_rich_full_bundle.select_row_by_key", return_value=row)
-    mocker.patch("cli_crud_app_rich_full_bundle.Confirm.ask", return_value=True)
-    mocker.patch("cli_crud_app_rich_full_bundle.Prompt.ask", return_value="alpha")
-
-    mocker.patch("cli_crud_app_rich_full_bundle.display_row")
-    mocker.patch("cli_crud_app_rich_full_bundle.console.print")
-
-    app.delete_bundle(mock_cursor)
-
-    mock_cursor.execute.assert_called_with("DELETE FROM bundle WHERE bundle_name = %s", ("alpha",))
-
-
-# ---------------------------------------------------------
-# delete_thing
-# ---------------------------------------------------------
-
-def test_delete_thing(mock_cursor, mocker):
-    row = ("http://x.com", datetime.now())
-    mock_cursor.description = [(c,) for c in ["thing_url", "update_time"]]
-
-    mocker.patch("cli_crud_app_rich_full_bundle.select_row_by_key", return_value=row)
-    mocker.patch("cli_crud_app_rich_full_bundle.Confirm.ask", return_value=True)
-    mocker.patch("cli_crud_app_rich_full_bundle.Prompt.ask", return_value="x")
-
-    mocker.patch("cli_crud_app_rich_full_bundle.display_row")
-    mocker.patch("cli_crud_app_rich_full_bundle.console.print")
-
-    app.delete_thing(mock_cursor)
-
-    mock_cursor.execute.assert_called_with(
-        "DELETE FROM things WHERE thing_url = %s", ("http://x.com",)
-    )
+if __name__ == "__main__":
+    unittest.main()

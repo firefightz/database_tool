@@ -1,232 +1,144 @@
-# file: cli_crud_app_rich_full_bundle.py
-
 import os
+import json
 import psycopg2
-from dotenv import load_dotenv
-from datetime import datetime
-from rich.console import Console
-from rich.table import Table
-from rich.prompt import Prompt, Confirm
-from thefuzz import fuzz
+from psycopg2 import sql
 
-load_dotenv()  # Load DB credentials from .env file
+# DB credentials from environment variables
+DB_HOST = os.environ["DB_HOST"]
+DB_PORT = int(os.environ.get("DB_PORT", 5432))
+DB_NAME = os.environ["DB_NAME"]
+DB_USER = os.environ["DB_USER"]
+DB_PASS = os.environ["DB_PASS"]
 
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT", 5432)
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
+# Whitelist tables and columns to avoid injection
+TABLES = {
+    "bundle": ["group_name", "group_address", "active", "created", "deactivated"],
+    "book": ["name", "update_frequency"]
+}
 
-console = Console()
-
-def connect():
-    return psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD
+def build_insert_query(table, values):
+    columns = values.keys()
+    query = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+        sql.Identifier(table),
+        sql.SQL(', ').join(map(sql.Identifier, columns)),
+        sql.SQL(', ').join(sql.Placeholder() * len(columns))
     )
+    return query, tuple(values.values())
 
-def display_row(row, columns):
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Column")
-    table.add_column("Value")
-    for col, val in zip(columns, row):
-        table.add_row(str(col), str(val))
-    console.print(table)
+def build_update_query(table, values, filters):
+    set_clause = sql.SQL(', ').join(
+        sql.Composed([sql.Identifier(k), sql.SQL(" = "), sql.Placeholder()]) for k in values.keys()
+    )
+    where_clause = sql.SQL(' AND ').join(
+        sql.Composed([sql.Identifier(k), sql.SQL(" = "), sql.Placeholder()]) for k in filters.keys()
+    )
+    query = sql.SQL("UPDATE {} SET {} WHERE {}").format(
+        sql.Identifier(table),
+        set_clause,
+        where_clause
+    )
+    return query, tuple(values.values()) + tuple(filters.values())
 
-def select_row_by_key(cursor, table, key_column, key_term):
-    cursor.execute(f"SELECT * FROM {table} WHERE {key_column} ILIKE %s", (f"%{key_term}%",))
-    results = cursor.fetchall()
-    if not results:
-        console.print("[red]No matching records found.[/red]")
-        return None
-    console.print(f"[bold green]{len(results)} results found:[/bold green]")
-    for idx, row in enumerate(results, 1):
-        console.print(f"\n[cyan]Result {idx}:[/cyan]")
-        display_row(row, [desc[0] for desc in cursor.description])
-    selection = Prompt.ask("Select which record to use (enter number)", choices=[str(i+1) for i in range(len(results))])
-    return results[int(selection)-1]
+def build_delete_query(table, filters):
+    where_clause = sql.SQL(' AND ').join(
+        sql.Composed([sql.Identifier(k), sql.SQL(" = "), sql.Placeholder()]) for k in filters.keys()
+    )
+    query = sql.SQL("DELETE FROM {} WHERE {}").format(
+        sql.Identifier(table),
+        where_clause
+    )
+    return query, tuple(filters.values())
 
-# ----------------- CRUD FUNCTIONS -----------------
+def build_select_query(table, filters):
+    if filters:
+        where_clause = sql.SQL(' AND ').join(
+            sql.Composed([sql.Identifier(k), sql.SQL(" = "), sql.Placeholder()]) for k in filters.keys()
+        )
+        query = sql.SQL("SELECT * FROM {} WHERE {}").format(
+            sql.Identifier(table),
+            where_clause
+        )
+        values = tuple(filters.values())
+    else:
+        query = sql.SQL("SELECT * FROM {}").format(sql.Identifier(table))
+        values = ()
+    return query, values
 
-def add_bundle(cursor):
-    bundle_name = Prompt.ask("Enter bundle name")
-    bundle_type = Prompt.ask("Enter bundle type")
-    created = datetime.now()
-    cursor.execute("""
-        INSERT INTO bundle(bundle_name, type, created, active)
-        VALUES (%s, %s, %s, %s) RETURNING *
-    """, (bundle_name, bundle_type, created, True))
-    row = cursor.fetchone()
-    console.print("[bold green]Bundle added:[/bold green]")
-    display_row(row, [desc[0] for desc in cursor.description])
+def build_lookup_query(table, term, column=None):
+    # Default column is the first column in the whitelist for the table
+    if not column:
+        column = TABLES[table][0]
+    query = sql.SQL("SELECT * FROM {} WHERE {} ILIKE %s").format(
+        sql.Identifier(table),
+        sql.Identifier(column)
+    )
+    params = (f"%{term}%",)
+    return query, params
 
-def add_thing(cursor):
-    thing_url = Prompt.ask("Enter thing URL")
-    cursor.execute("""
-        INSERT INTO things(thing_url)
-        VALUES (%s) RETURNING *
-    """, (thing_url,))
-    row = cursor.fetchone()
-    console.print("[bold green]Thing added:[/bold green]")
-    display_row(row, [desc[0] for desc in cursor.description])
+def lambda_handler(event, context):
+    """
+    Expects JSON payload like:
+    {
+        "action": "SELECT"|"INSERT"|"UPDATE"|"DELETE"|"LOOKUP",
+        "table": "bundle"|"book",
+        "filters": {...},   # for SELECT, UPDATE, DELETE
+        "values": {...},    # for INSERT, UPDATE
+        "term": "search_term" # for LOOKUP
+    }
+    """
+    action = event.get("action", "").upper()
+    table = event.get("table")
 
-def update_bundle(cursor):
-    key_term = Prompt.ask("Enter key term to search for a bundle")
-    row = select_row_by_key(cursor, "bundle", "bundle_name", key_term)
-    if not row:
-        return
-    columns = [desc[0] for desc in cursor.description]
-    console.print("[bold cyan]Current bundle info:[/bold cyan]")
-    display_row(row, columns)
+    if table not in TABLES:
+        return {"statusCode": 400, "body": json.dumps(f"Table {table} not allowed.")}
 
-    updates = {}
-    if Confirm.ask("Do you want to update the active status?"):
-        current = row[columns.index("active")]
-        console.print(f"Current active status: [yellow]{current}[/yellow]")
-        new_active = Confirm.ask("Set active to True?")
-        updates["active"] = new_active
+    # extract input data
+    filters = event.get("filters", {})
+    values = event.get("values", {})
+    term = event.get("term", "")
 
-    if Confirm.ask("Do you want to remove deactivated date?"):
-        updates["deactivated"] = None
+    # validate columns
+    for col in list(filters.keys()) + list(values.keys()):
+        if col not in TABLES[table]:
+            return {"statusCode": 400, "body": json.dumps(f"Column {col} not allowed in table {table}.")}
 
-    if updates:
-        set_clause = ", ".join([f"{k} = %s" for k in updates.keys()])
-        values = list(updates.values()) + [row[columns.index("bundle_name")]]
-        cursor.execute(f"UPDATE bundle SET {set_clause} WHERE bundle_name = %s RETURNING *", values)
-        updated_row = cursor.fetchone()
-        console.print("[bold green]Bundle updated:[/bold green]")
-        display_row(updated_row, columns)
+    try:
+        # build query
+        if action == "INSERT":
+            query, params = build_insert_query(table, values)
+        elif action == "UPDATE":
+            query, params = build_update_query(table, values, filters)
+        elif action == "DELETE":
+            query, params = build_delete_query(table, filters)
+        elif action == "SELECT":
+            query, params = build_select_query(table, filters)
+        elif action == "LOOKUP":
+            query, params = build_lookup_query(table, term)
+        else:
+            return {"statusCode": 400, "body": json.dumps("Invalid action.")}
 
-def update_thing(cursor):
-    key_term = Prompt.ask("Enter key term to search for a thing")
-    row = select_row_by_key(cursor, "things", "thing_url", key_term)
-    if not row:
-        return
-    columns = [desc[0] for desc in cursor.description]
-    console.print("[bold cyan]Current thing info:[/bold cyan]")
-    display_row(row, columns)
+        # execute query
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+            user=DB_USER, password=DB_PASS
+        )
+        cur = conn.cursor()
 
-    if Confirm.ask("Do you want to update the thing URL?"):
-        new_url = Prompt.ask("Enter new URL")
-        cursor.execute("UPDATE things SET thing_url = %s WHERE thing_url = %s RETURNING *", (new_url, row[columns.index("thing_url")]))
-        updated_row = cursor.fetchone()
-        console.print("[bold green]Thing updated:[/bold green]")
-        display_row(updated_row, columns)
+        cur.execute(query, params)
 
-def delete_bundle(cursor):
-    key_term = Prompt.ask("Enter key term to search for a bundle to delete")
-    row = select_row_by_key(cursor, "bundle", "bundle_name", key_term)
-    if not row:
-        return
-    columns = [desc[0] for desc in cursor.description]
-    console.print("[bold red]Selected bundle for deletion:[/bold red]")
-    display_row(row, columns)
-    if Confirm.ask("Are you sure you want to delete this bundle?"):
-        cursor.execute("DELETE FROM bundle WHERE bundle_name = %s", (row[columns.index("bundle_name")],))
-        console.print("[bold green]Bundle deleted.[/bold green]")
+        result = None
+        if action in ["SELECT", "LOOKUP"]:
+            columns = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+            result = [dict(zip(columns, row)) for row in rows]
+        else:
+            conn.commit()
+            result = {"rowcount": cur.rowcount}
 
-def delete_thing(cursor):
-    key_term = Prompt.ask("Enter key term to search for a thing to delete")
-    row = select_row_by_key(cursor, "things", "thing_url", key_term)
-    if not row:
-        return
-    columns = [desc[0] for desc in cursor.description]
-    console.print("[bold red]Selected thing for deletion:[/bold red]")
-    display_row(row, columns)
-    if Confirm.ask("Are you sure you want to delete this thing?"):
-        cursor.execute("DELETE FROM things WHERE thing_url = %s", (row[columns.index("thing_url")],))
-        console.print("[bold green]Thing deleted.[/bold green]")
+        cur.close()
+        conn.close()
 
-# ----------------- FUZZY + PAGINATED LOOKUP -----------------
+        return {"statusCode": 200, "body": json.dumps({"action": action, "result": result})}
 
-def lookup_paginated(cursor, table, key_column):
-    key_term = Prompt.ask(f"Enter search term for {table}")
-    
-    # Fetch all rows
-    cursor.execute(f"SELECT * FROM {table}")
-    all_rows = cursor.fetchall()
-    columns = [desc[0] for desc in cursor.description]
-    
-    # Fuzzy matching
-    results = []
-    for row in all_rows:
-        score = fuzz.partial_ratio(key_term.lower(), str(row[columns.index(key_column)]).lower())
-        if score >= 60:  # threshold
-            results.append((score, row))
-    
-    if not results:
-        console.print("[red]No matching records found.[/red]")
-        return
-    
-    results.sort(reverse=True, key=lambda x: x[0])
-    rows_only = [row for score, row in results]
-    
-    # Pagination
-    page_size = 5
-    total_pages = (len(rows_only) + page_size - 1) // page_size
-    current_page = 0
-    
-    while True:
-        console.print(f"\n[bold green]Page {current_page+1} of {total_pages}[/bold green]")
-        start = current_page * page_size
-        end = start + page_size
-        for idx, row in enumerate(rows_only[start:end], start=1):
-            console.print(f"\n[cyan]Result {start + idx}:[/cyan]")
-            display_row(row, columns)
-            console.print("-"*40)
-        
-        if total_pages == 1:
-            break
-        
-        console.print("[bold yellow]n[/bold yellow]=next, [bold yellow]p[/bold yellow]=previous, [bold yellow]q[/bold yellow]=quit")
-        action = Prompt.ask("Choose action", choices=["n", "p", "q"])
-        if action == "n" and current_page < total_pages - 1:
-            current_page += 1
-        elif action == "p" and current_page > 0:
-            current_page -= 1
-        elif action == "q":
-            break
-
-def lookup(cursor):
-    table_choice = Prompt.ask("Lookup in table", choices=["bundle", "things"])
-    table = table_choice
-    key_column = "bundle_name" if table == "bundle" else "thing_url"
-    lookup_paginated(cursor, table, key_column)
-
-# ----------------- MAIN MENU -----------------
-
-def main():
-    with connect() as conn:
-        with conn.cursor() as cursor:
-            while True:
-                console.print("\n[bold blue]Main Menu[/bold blue]")
-                choice = Prompt.ask("Select an option", choices=[
-                    "Add Bundle", "Add Thing",
-                    "Update Bundle", "Update Thing",
-                    "Delete Bundle", "Delete Thing",
-                    "Lookup", "Exit"
-                ])
-                if choice == "Add Bundle":
-                    add_bundle(cursor)
-                elif choice == "Add Thing":
-                    add_thing(cursor)
-                elif choice == "Update Bundle":
-                    update_bundle(cursor)
-                elif choice == "Update Thing":
-                    update_thing(cursor)
-                elif choice == "Delete Bundle":
-                    delete_bundle(cursor)
-                elif choice == "Delete Thing":
-                    delete_thing(cursor)
-                elif choice == "Lookup":
-                    lookup(cursor)
-                elif choice == "Exit":
-                    console.print("[bold magenta]Exiting...[/bold magenta]")
-                    break
-                conn.commit()
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        return {"statusCode": 500, "body": json.dumps(str(e))}
