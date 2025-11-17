@@ -1,167 +1,101 @@
 import unittest
 from unittest.mock import patch, MagicMock
-import json
-import os
+import main
 
-# Patch environment variables before importing main
-env_vars = {
-    "DB_HOST": "localhost",
-    "DB_PORT": "5432",
-    "DB_NAME": "testdb",
-    "DB_USER": "testuser",
-    "DB_PASS": "testpass"
-}
+class TestAdminCLI(unittest.TestCase):
 
-with patch.dict(os.environ, env_vars):
-    import main  # Now main.py sees the env vars
-
-
-class TestCrudLambda(unittest.TestCase):
-
-    def setUp(self):
-        # Example payloads
-        self.select_bundle_payload = {"action": "SELECT", "table": "bundle"}
-        self.insert_bundle_payload = {
-            "action": "INSERT",
-            "table": "bundle",
-            "values": {"group_name": "Test", "group_address": "123 St", "active": True}
-        }
-        self.update_bundle_payload = {
-            "action": "UPDATE",
-            "table": "bundle",
-            "values": {"active": False},
-            "filters": {"group_name": "Test", "group_address": "123 St"}
-        }
-        self.update_bundle_missing_key = {
-            "action": "UPDATE",
-            "table": "bundle",
-            "values": {"active": False},
-            "filters": {"group_name": "Test"}  # missing group_address
-        }
-        self.delete_bundle_payload = {
-            "action": "DELETE",
-            "table": "bundle",
-            "filters": {"group_name": "Test", "group_address": "123 St"}
-        }
-        self.lookup_bundle_payload = {
-            "action": "LOOKUP",
-            "table": "bundle",
-            "filters": {"group_name": "Test", "group_address": "123 St"}
-        }
-
-        self.insert_book_payload = {
-            "action": "INSERT",
-            "table": "book",
-            "values": {"name": "Python 101", "update_frequency": "daily"}
-        }
-        self.update_book_payload = {
-            "action": "UPDATE",
-            "table": "book",
-            "values": {"update_frequency": "weekly"},
-            "filters": {"name": "Python 101"}
-        }
-
+    # -------------------------------
+    # Database connection test
+    # -------------------------------
+    @patch("main.getpass.getpass", return_value="password")
     @patch("main.psycopg2.connect")
-    def test_select_bundle(self, mock_connect):
+    def test_get_connection(self, mock_connect, mock_getpass):
+        mock_conn = MagicMock()
+        mock_connect.return_value = mock_conn
+        conn = main.get_connection()
+        mock_connect.assert_called_once()
+        self.assertEqual(conn, mock_conn)
+
+    # -------------------------------
+    # Table selection tests
+    # -------------------------------
+    @patch("builtins.input", side_effect=["1"])
+    def test_select_table_valid(self, mock_input):
+        table = main.select_table()
+        self.assertEqual(table, "bundle")
+
+    @patch("builtins.input", side_effect=["invalid", "2"])
+    def test_select_table_invalid_then_valid(self, mock_input):
+        table = main.select_table()
+        self.assertEqual(table, "book")
+
+    # -------------------------------
+    # Key input tests
+    # -------------------------------
+    @patch("builtins.input", side_effect=["Acme Corp", "123 Main St"])
+    def test_get_key_values_bundle(self, mock_input):
+        keys = main.get_key_values("bundle")
+        self.assertEqual(keys, {"group_name": "Acme Corp", "group_address": "123 Main St"})
+
+    @patch("builtins.input", side_effect=["Weekly Digest"])
+    def test_get_key_values_book(self, mock_input):
+        keys = main.get_key_values("book")
+        self.assertEqual(keys, {"name": "Weekly Digest"})
+
+    # -------------------------------
+    # Confirmation prompt tests
+    # -------------------------------
+    @patch("builtins.input", side_effect=["y"])
+    def test_confirm_action_yes(self, mock_input):
+        self.assertTrue(main.confirm_action("Confirm?"))
+
+    @patch("builtins.input", side_effect=["n"])
+    def test_confirm_action_no(self, mock_input):
+        self.assertFalse(main.confirm_action("Confirm?"))
+
+    # -------------------------------
+    # Date parsing tests
+    # -------------------------------
+    def test_parse_date_input_valid(self):
+        date_str = main.parse_date_input("11/16/2025")
+        self.assertEqual(date_str, "2025-11-16")
+
+    def test_parse_date_input_invalid_then_valid(self):
+        self.assertIsNone(main.parse_date_input("invalid"))
+        self.assertEqual(main.parse_date_input("2025-11-16"), "2025-11-16")
+
+    # -------------------------------
+    # Delete record test
+    # -------------------------------
+    @patch("main.get_key_values")
+    @patch("main.confirm_action", return_value=True)
+    def test_delete_record_calls_cursor_execute(self, mock_confirm, mock_get_keys):
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_connect.return_value = mock_conn
-        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_get_keys.return_value = {"group_name": "Acme Corp", "group_address": "123 Main St"}
 
-        mock_cursor.description = [("group_name",), ("active",)]
-        mock_cursor.fetchall.return_value = [("Test Group", True)]
+        main.delete_record(mock_conn, "bundle")
 
-        response = main.lambda_handler(self.select_bundle_payload, None)
-        body = json.loads(response["body"])
-        self.assertEqual(body["action"], "SELECT")
-        self.assertEqual(body["result"], [{"group_name": "Test Group", "active": True}])
+        mock_cursor.execute.assert_called_once()
+        mock_conn.commit.assert_called_once()
 
-    @patch("main.psycopg2.connect")
-    def test_insert_bundle(self, mock_connect):
+    # -------------------------------
+    # Update record test
+    # -------------------------------
+    @patch("main.get_key_values")
+    @patch("main.confirm_action", return_value=True)
+    @patch("builtins.input", side_effect=["false", "", "2025-11-30", ""])
+    def test_update_record_calls_cursor_execute(self, mock_input, mock_confirm, mock_get_keys):
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_connect.return_value = mock_conn
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.rowcount = 1
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_get_keys.return_value = {"group_name": "Acme Corp", "group_address": "123 Main St"}
 
-        response = main.lambda_handler(self.insert_bundle_payload, None)
-        body = json.loads(response["body"])
-        self.assertEqual(body["action"], "INSERT")
-        self.assertEqual(body["result"]["rowcount"], 1)
+        main.update_record(mock_conn, "bundle")
 
-    @patch("main.psycopg2.connect")
-    def test_update_bundle(self, mock_connect):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connect.return_value = mock_conn
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.rowcount = 1
-
-        response = main.lambda_handler(self.update_bundle_payload, None)
-        body = json.loads(response["body"])
-        self.assertEqual(body["action"], "UPDATE")
-        self.assertEqual(body["result"]["rowcount"], 1)
-
-    def test_update_bundle_missing_key(self):
-        """Should fail because missing unique key (group_address)"""
-        response = main.lambda_handler(self.update_bundle_missing_key, None)
-        self.assertEqual(response["statusCode"], 400)
-        self.assertIn("Missing required unique key", json.loads(response["body"]))
-
-    @patch("main.psycopg2.connect")
-    def test_delete_bundle(self, mock_connect):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connect.return_value = mock_conn
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.rowcount = 1
-
-        response = main.lambda_handler(self.delete_bundle_payload, None)
-        body = json.loads(response["body"])
-        self.assertEqual(body["action"], "DELETE")
-        self.assertEqual(body["result"]["rowcount"], 1)
-
-    @patch("main.psycopg2.connect")
-    def test_lookup_bundle(self, mock_connect):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connect.return_value = mock_conn
-        mock_conn.cursor.return_value = mock_cursor
-
-        mock_cursor.description = [("group_name",), ("active",)]
-        mock_cursor.fetchall.return_value = [("Test Group", True)]
-
-        response = main.lambda_handler(self.lookup_bundle_payload, None)
-        body = json.loads(response["body"])
-        self.assertEqual(body["action"], "LOOKUP")
-        self.assertEqual(body["result"], [{"group_name": "Test Group", "active": True}])
-
-    @patch("main.psycopg2.connect")
-    def test_insert_book(self, mock_connect):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connect.return_value = mock_conn
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.rowcount = 1
-
-        response = main.lambda_handler(self.insert_book_payload, None)
-        body = json.loads(response["body"])
-        self.assertEqual(body["action"], "INSERT")
-        self.assertEqual(body["result"]["rowcount"], 1)
-
-    @patch("main.psycopg2.connect")
-    def test_update_book(self, mock_connect):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_connect.return_value = mock_conn
-        mock_conn.cursor.return_value = mock_cursor
-        mock_cursor.rowcount = 1
-
-        response = main.lambda_handler(self.update_book_payload, None)
-        body = json.loads(response["body"])
-        self.assertEqual(body["action"], "UPDATE")
-        self.assertEqual(body["result"]["rowcount"], 1)
-
+        mock_cursor.execute.assert_called_once()
+        mock_conn.commit.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()
