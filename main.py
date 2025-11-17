@@ -16,6 +16,13 @@ TABLES = {
     "book": ["name", "update_frequency"]
 }
 
+# Unique keys for tables
+UNIQUE_KEYS = {
+    "bundle": ["group_name", "group_address"],
+    "book": ["name"]
+}
+
+
 def build_insert_query(table, values):
     columns = values.keys()
     query = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
@@ -24,6 +31,7 @@ def build_insert_query(table, values):
         sql.SQL(', ').join(sql.Placeholder() * len(columns))
     )
     return query, tuple(values.values())
+
 
 def build_update_query(table, values, filters):
     set_clause = sql.SQL(', ').join(
@@ -39,6 +47,7 @@ def build_update_query(table, values, filters):
     )
     return query, tuple(values.values()) + tuple(filters.values())
 
+
 def build_delete_query(table, filters):
     where_clause = sql.SQL(' AND ').join(
         sql.Composed([sql.Identifier(k), sql.SQL(" = "), sql.Placeholder()]) for k in filters.keys()
@@ -49,6 +58,7 @@ def build_delete_query(table, filters):
     )
     return query, tuple(filters.values())
 
+
 def build_select_query(table, filters):
     if filters:
         where_clause = sql.SQL(' AND ').join(
@@ -58,14 +68,14 @@ def build_select_query(table, filters):
             sql.Identifier(table),
             where_clause
         )
-        values = tuple(filters.values())
+        params = tuple(filters.values())
     else:
         query = sql.SQL("SELECT * FROM {}").format(sql.Identifier(table))
-        values = ()
-    return query, values
+        params = ()
+    return query, params
+
 
 def build_lookup_query(table, term, column=None):
-    # Allow user to provide column; default to first column if not provided
     if column and column not in TABLES[table]:
         raise ValueError(f"Column {column} not allowed in table {table}.")
     if not column:
@@ -74,8 +84,16 @@ def build_lookup_query(table, term, column=None):
         sql.Identifier(table),
         sql.Identifier(column)
     )
-    params = (f"%{term}%",)
-    return query, params
+    return query, (f"%{term}%",)
+
+
+def validate_unique_key(table, filters):
+    """Ensure unique key columns are present in filters."""
+    required_keys = UNIQUE_KEYS.get(table, [])
+    missing_keys = [k for k in required_keys if k not in filters]
+    if missing_keys:
+        raise ValueError(f"Missing required unique key(s) for {table}: {missing_keys}")
+
 
 def lambda_handler(event, context):
     """
@@ -83,32 +101,41 @@ def lambda_handler(event, context):
     {
         "action": "SELECT"|"INSERT"|"UPDATE"|"DELETE"|"LOOKUP",
         "table": "bundle"|"book",
-        "filters": {...},   # for SELECT, UPDATE, DELETE
-        "values": {...},    # for INSERT, UPDATE
-        "term": "search_term", # for LOOKUP
-        "column": "column_name" # optional, for LOOKUP
+        "filters": {...},
+        "values": {...},
+        "term": "search term",
+        "column": "column_name"
     }
     """
+
     action = event.get("action", "").upper()
     table = event.get("table")
 
     if table not in TABLES:
         return {"statusCode": 400, "body": json.dumps(f"Table {table} not allowed.")}
 
-    # extract input data
     filters = event.get("filters", {})
     values = event.get("values", {})
     term = event.get("term", "")
-    column = event.get("column")  # optional column for LOOKUP
+    column = event.get("column")
 
-    # validate columns for INSERT/UPDATE/DELETE/SELECT
-    if action in ["INSERT", "UPDATE", "DELETE", "SELECT"]:
+    # Validate columns for all actions
+    if action in ["INSERT", "UPDATE", "DELETE", "SELECT", "LOOKUP"]:
         for col in list(filters.keys()) + list(values.keys()):
             if col not in TABLES[table]:
                 return {"statusCode": 400, "body": json.dumps(f"Column {col} not allowed in table {table}.")}
 
+    # Enforce unique key for UPDATE, DELETE, LOOKUP
+    if action in ["UPDATE", "DELETE", "LOOKUP"]:
+        try:
+            validate_unique_key(table, filters)
+        except ValueError as e:
+            return {"statusCode": 400, "body": json.dumps(str(e))}
+
+    conn = None
+    cur = None
+
     try:
-        # build query
         if action == "INSERT":
             query, params = build_insert_query(table, values)
         elif action == "UPDATE":
@@ -122,7 +149,6 @@ def lambda_handler(event, context):
         else:
             return {"statusCode": 400, "body": json.dumps("Invalid action.")}
 
-        # execute query
         conn = psycopg2.connect(
             host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
             user=DB_USER, password=DB_PASS
@@ -131,7 +157,6 @@ def lambda_handler(event, context):
 
         cur.execute(query, params)
 
-        result = None
         if action in ["SELECT", "LOOKUP"]:
             columns = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
@@ -140,10 +165,19 @@ def lambda_handler(event, context):
             conn.commit()
             result = {"rowcount": cur.rowcount}
 
-        cur.close()
-        conn.close()
-
         return {"statusCode": 200, "body": json.dumps({"action": action, "result": result})}
 
     except Exception as e:
         return {"statusCode": 500, "body": json.dumps(str(e))}
+
+    finally:
+        if cur:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass

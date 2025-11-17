@@ -66,59 +66,50 @@ dist/main
 ## Examples
 ```json
 {
-  "action": "INSERT",
-  "table": "bundle",
-  "values": {
-    "group_name": "Test Group",
-    "group_address": "123 Test St",
-    "active": true,
-    "created": "2025-01-01",
-    "deactivated": null
-  }
+    "action": "INSERT",
+    "table": "bundle",
+    "values": {
+        "group_name": "Alpha Team",
+        "group_address": "123 Main St",
+        "active": true
+    }
 }
-
+Update bundle (must include both keys)
 {
     "action": "UPDATE",
     "table": "bundle",
-    "filters": {"group_name": "My Group"},
-    "values": {"active": false}
+    "values": {"active": false},
+    "filters": {
+        "group_name": "Alpha Team",
+        "group_address": "123 Main St"
+    }
 }
-
-
+Delete bundle (must include both keys)
 {
     "action": "DELETE",
     "table": "bundle",
-    "filters": {"group_name": "My Group"}
+    "filters": {
+        "group_name": "Alpha Team",
+        "group_address": "123 Main St"
+    }
 }
-
-
-{
-    "action": "SELECT",
-    "table": "bundle",
-    "filters": {"active": true}
-}
-
-
-{
-  "action": "SELECT",
-  "table": "book"
-}
-
+Lookup bundle by unique key
 {
     "action": "LOOKUP",
     "table": "bundle",
-    "term": "Group",
-    "column": "group_name"
+    "filters": {
+        "group_name": "Alpha Team",
+        "group_address": "123 Main St"
+    }
+}
+Book table example (unique key is name)
+{
+    "action": "UPDATE",
+    "table": "book",
+    "values": {"update_frequency": "weekly"},
+    "filters": {"name": "Python 101"}
 }
 
-```
-LOOKUP (defaults to first column)
-```json
-{
-    "action": "LOOKUP",
-    "table": "bundle",
-    "term": "123"
-}
 
 ```
 
